@@ -1,0 +1,72 @@
+# LeverPortal Configuration File
+
+# Economy Settings
+economy:
+  # Enable diamond payment system
+  enabled: true
+  
+  # Global teleportation cost (diamonds per teleport)
+  # Set to 0 to disable global cost
+  global_teleport_cost: 1
+  
+  # Portal creation cost settings
+  creation:
+    # Base cost for creating a portal (diamonds)
+    base_cost: 10
+    
+    # Cost per block distance between portals
+    # Formula: base_cost + (distance / blocks_per_diamond) * diamond_cost
+    blocks_per_diamond: 100
+    diamond_cost_per_distance: 5
+    
+    # Maximum creation cost (to prevent excessive costs)
+    max_cost: 1000
+
+# Portal-specific costs
+# Format:
+# portal_costs:
+#   portal_name: cost_in_diamonds
+portal_costs: {}
+
+# Player-specific costs
+# Format:
+# player_costs:
+#   player_uuid:
+#     portal_name: cost_in_diamonds
+player_costs: {}
+
+# Access Control Settings
+access_control:
+  # Entity filtering - control which entities can use portals
+  entity_filtering:
+    # Enable entity filtering
+    enabled: true
+    
+    # List of allowed entity types (case-insensitive)
+    # Common types: PLAYER, VILLAGER, ZOMBIE, SKELETON, CREEPER, ENDERMAN, etc.
+    # See: https://hub.spigotmc.org/javadocs/spigot/org/bukkit/entity/EntityType.html
+    allowed_entities:
+      - PLAYER
+      - VILLAGER
+  
+  # Default access mode for new portals
+  # Options: PUBLIC, PRIVATE, WHITELIST, BLACKLIST
+  # PUBLIC: Everyone can use (default)
+  # PRIVATE: Only owner and allowed players
+  # WHITELIST: Only explicitly allowed players
+  # BLACKLIST: Everyone except denied players
+  default_access_mode: PUBLIC
+
+# Messages
+messages:
+  insufficient_funds: "§cYou don't have enough diamonds! Required: %cost%, You have: %balance%"
+  payment_success: "§aPaid %cost% diamonds for teleportation."
+  creation_cost: "§ePortal creation will cost %cost% diamonds. Type /portal confirm to proceed."
+  creation_success: "§aPortal created! Paid %cost% diamonds."
+  cost_info: "§eTeleportation cost: %cost% diamonds"
+  access_denied: "§cYou don't have permission to use this portal!"
+  not_owner: "§cYou are not the owner of this portal!"
+  player_allowed: "§aPlayer %player% can now use this portal."
+  player_denied: "§cPlayer %player% is now denied from using this portal."
+  player_access_removed: "§ePlayer %player% access has been reset."
+  access_mode_changed: "§aPortal access mode changed to %mode%."

@@ -1,0 +1,30 @@
+name: LeverPortal
+version: 1.0.0
+main: com.portal.plugin.Main
+api-version: 1.21
+author: Portal Plugin Team
+description: Create linked portals activated by levers with diamond-based economy
+
+commands:
+  portal:
+    description: Portal management commands
+    usage: /<command> <create|link|remove|list|setcost|setplayercost|cost> [args]
+    permission: leverportal.use
+    permission-message: You don't have permission to use this command
+
+permissions:
+  leverportal.use:
+    description: Allows using portal commands
+    default: op
+  leverportal.create:
+    description: Allows creating portals
+    default: op
+  leverportal.link:
+    description: Allows linking portals
+    default: op
+  leverportal.remove:
+    description: Allows removing portals
+    default: op
+  leverportal.admin:
+    description: Allows managing portal costs and economy
+    default: op
