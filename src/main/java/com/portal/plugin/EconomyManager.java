@@ -65,15 +65,19 @@ public class EconomyManager {
         ConfigurationSection playerSection = plugin.getConfig().getConfigurationSection("player_costs");
         if (playerSection != null) {
             for (String uuidStr : playerSection.getKeys(false)) {
-                UUID uuid = UUID.fromString(uuidStr);
-                Map<String, Integer> costs = new HashMap<>();
-                ConfigurationSection playerPortals = playerSection.getConfigurationSection(uuidStr);
-                if (playerPortals != null) {
-                    for (String portalName : playerPortals.getKeys(false)) {
-                        costs.put(portalName, playerPortals.getInt(portalName));
+                try {
+                    UUID uuid = UUID.fromString(uuidStr);
+                    Map<String, Integer> costs = new HashMap<>();
+                    ConfigurationSection playerPortals = playerSection.getConfigurationSection(uuidStr);
+                    if (playerPortals != null) {
+                        for (String portalName : playerPortals.getKeys(false)) {
+                            costs.put(portalName, playerPortals.getInt(portalName));
+                        }
                     }
+                    playerCosts.put(uuid, costs);
+                } catch (IllegalArgumentException e) {
+                    plugin.getLogger().warning("Invalid UUID in config: " + uuidStr);
                 }
-                playerCosts.put(uuid, costs);
             }
         }
     }
@@ -103,11 +107,14 @@ public class EconomyManager {
      */
     public int calculateCreationCost(double distance) {
         if (!economyEnabled) return 0;
+        if (distance < 0) distance = 0;
         
-        int distanceCost = (int) ((distance / blocksPerDiamond) * diamondCostPerDistance);
-        int totalCost = baseCost + distanceCost;
+        // Use long to prevent integer overflow
+        long distanceCost = (long) ((distance / blocksPerDiamond) * diamondCostPerDistance);
+        long totalCost = baseCost + distanceCost;
         
-        return Math.min(totalCost, maxCost);
+        // Clamp to valid range
+        return (int) Math.min(Math.max(totalCost, 0), maxCost);
     }
     
     /**

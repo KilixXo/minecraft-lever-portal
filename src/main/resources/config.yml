@@ -1,5 +1,13 @@
 # LeverPortal Configuration File
 
+# Storage Settings
+storage:
+  # Storage backend for portal data.
+  # Options:
+  #   json   — stores data in plugins/LeverPortal/portals/portals.json (default, no extra setup)
+  #   sqlite — stores data in plugins/LeverPortal/portals.db (recommended for large servers)
+  type: json
+
 # Economy Settings
 economy:
   # Enable diamond payment system
@@ -21,6 +29,26 @@ economy:
     
     # Maximum creation cost (to prevent excessive costs)
     max_cost: 1000
+
+# Portal Settings (M-9: configurable constants)
+portal:
+  # Teleport cooldown in ticks (20 ticks = 1 second)
+  teleport_cooldown_ticks: 40
+  
+  # Minimum blocks required to create a portal
+  min_blocks: 2
+  
+  # Maximum blocks allowed per portal
+  max_blocks: 100
+  
+  # Minimum distance between linked portals
+  min_link_distance: 3.0
+  
+  # Distance threshold for detecting player inside a portal
+  player_detection_radius: 1.5
+  
+  # Maximum distance from portal center to associate a lever
+  max_lever_distance: 10.0
 
 # Portal-specific costs
 # Format:
@@ -51,9 +79,9 @@ access_control:
   
   # Default access mode for new portals
   # Options: PUBLIC, PRIVATE, WHITELIST, BLACKLIST
-  # PUBLIC: Everyone can use (default)
-  # PRIVATE: Only owner and allowed players
-  # WHITELIST: Only explicitly allowed players
+  # PUBLIC: Everyone can use (denied list still applies)
+  # PRIVATE: Only owner
+  # WHITELIST: Only explicitly allowed players (+ owner)
   # BLACKLIST: Everyone except denied players
   default_access_mode: PUBLIC
 
