@@ -1,12 +1,49 @@
 # LeverPortal Configuration File
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Storage Settings
+# ─────────────────────────────────────────────────────────────────────────────
 storage:
   # Storage backend for portal data.
+  #
   # Options:
-  #   json   — stores data in plugins/LeverPortal/portals/portals.json (default, no extra setup)
-  #   sqlite — stores data in plugins/LeverPortal/portals.db (recommended for large servers)
+  #   json       — stores data in plugins/LeverPortal/portals/portals.json
+  #                (default, no extra setup required)
+  #   sqlite     — stores data in plugins/LeverPortal/portals.db
+  #                (recommended for single-server setups)
+  #   mysql      — stores data in a remote MySQL server
+  #   mariadb    — stores data in a remote MariaDB server
+  #   postgresql — stores data in a remote PostgreSQL server
+  #
+  # For mysql / mariadb / postgresql you MUST fill in the 'database' section below.
   type: json
+
+  # ── Remote database connection settings ──────────────────────────────────
+  # These settings are used when 'type' is mysql, mariadb, or postgresql.
+  # They are ignored when 'type' is json or sqlite.
+  database:
+    # Hostname or IP address of the database server
+    host: localhost
+
+    # Port of the database server
+    # Default ports: MySQL/MariaDB = 3306, PostgreSQL = 5432
+    port: 3306
+
+    # Name of the database / schema to use
+    name: leverportal
+
+    # Database user credentials
+    username: root
+    password: ""
+
+    # Optional extra JDBC connection properties appended to the URL as a query string.
+    # Each key=value pair is URL-encoded before being appended (SEC-01 fix).
+    # Examples:
+    #   MySQL/MariaDB : "useSSL=true&serverTimezone=UTC&characterEncoding=utf8"
+    #   PostgreSQL    : "sslmode=require"
+    # Leave empty to use driver defaults.
+    # SEC-03 fix: default changed from useSSL=false to useSSL=true to encrypt DB traffic.
+    properties: "useSSL=true&serverTimezone=UTC"
 
 # Economy Settings
 economy:
@@ -50,18 +87,9 @@ portal:
   # Maximum distance from portal center to associate a lever
   max_lever_distance: 10.0
 
-# Portal-specific costs
-# Format:
-# portal_costs:
-#   portal_name: cost_in_diamonds
-portal_costs: {}
-
-# Player-specific costs
-# Format:
-# player_costs:
-#   player_uuid:
-#     portal_name: cost_in_diamonds
-player_costs: {}
+# NOTE (SEC-04 fix): portal_costs and player_costs are now stored in data.yml
+# (plugins/LeverPortal/data.yml) rather than config.yml, so that runtime data
+# and static configuration are never mixed. Do not add them back here.
 
 # Access Control Settings
 access_control:

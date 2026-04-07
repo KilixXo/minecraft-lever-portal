@@ -1,0 +1,74 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.portal'
+version = '1.0.0'
+description = 'LeverPortal — Create linked portals activated by levers with diamond-based economy'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+compileJava.options.encoding = 'UTF-8'
+
+repositories {
+    // Paper / Spigot API
+    maven { url 'https://repo.papermc.io/repository/maven-public/' }
+    maven {
+        url 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
+        content { includeGroup 'org.spigotmc' }
+    }
+    mavenCentral()
+}
+
+dependencies {
+    // Spigot API — provided at runtime by the server
+    compileOnly 'org.spigotmc:spigot-api:1.21.1-R0.1-SNAPSHOT'
+
+    // SQLite JDBC driver — shaded into the plugin jar
+    implementation 'org.xerial:sqlite-jdbc:3.45.3.0'
+
+    // MySQL / MariaDB JDBC drivers — shaded into the plugin jar
+    implementation 'com.mysql:mysql-connector-j:8.3.0'
+    implementation 'org.mariadb.jdbc:mariadb-java-client:3.3.3'
+
+    // PostgreSQL JDBC driver — shaded into the plugin jar
+    implementation 'org.postgresql:postgresql:42.7.3'
+}
+
+// Process plugin.yml resource filtering (replaces ${project.version} etc.)
+processResources {
+    def props = [version: version, description: description]
+    inputs.properties props
+    filteringCharset 'UTF-8'
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
+
+// Shadow jar — produces a fat jar with all shaded dependencies
+shadowJar {
+    archiveClassifier.set('')          // no '-all' suffix
+    archiveBaseName.set('LeverPortal')
+
+    // Relocate shaded drivers to avoid classpath conflicts with other plugins
+    relocate 'org.sqlite',          'com.portal.libs.sqlite'
+    relocate 'com.mysql',           'com.portal.libs.mysql'
+    relocate 'org.mariadb',         'com.portal.libs.mariadb'
+    relocate 'org.postgresql',      'com.portal.libs.postgresql'
+
+    // Exclude unnecessary files from the fat jar
+    exclude 'META-INF/*.SF'
+    exclude 'META-INF/*.DSA'
+    exclude 'META-INF/*.RSA'
+    exclude 'META-INF/LICENSE*'
+    exclude 'META-INF/NOTICE*'
+}
+
+// Make 'build' produce the shadow jar by default
+build.dependsOn shadowJar
+jar.enabled = false   // disable the plain jar; only the shadow jar is needed

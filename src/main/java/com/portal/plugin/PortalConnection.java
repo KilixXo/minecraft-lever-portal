@@ -52,10 +52,9 @@ public class PortalConnection {
 
     @Override
     public int hashCode() {
-        // M-3 fix: commutative hash with reduced collisions
-        int h1 = portal1Id.hashCode();
-        int h2 = portal2Id.hashCode();
-        return (Math.min(h1, h2) * 31) + Math.max(h1, h2);
+        // MAINT-04 fix: XOR is the standard commutative hash for bidirectional pairs.
+        // Avoids integer overflow risk of the previous (min*31 + max) formula.
+        return portal1Id.hashCode() ^ portal2Id.hashCode();
     }
 
     @Override

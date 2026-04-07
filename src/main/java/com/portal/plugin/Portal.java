@@ -1,5 +1,9 @@
 package com.portal.plugin;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -22,6 +26,9 @@ public class Portal {
 
     public static final double PLAYER_DETECTION_RADIUS = 1.5;
 
+    // MAINT-02: shared Gson instance for JSON serialization
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+
     private final String id;
     private final Orientation orientation;
     private final List<Location> blockLocations;
@@ -30,6 +37,9 @@ public class Portal {
     private final List<Location> interiorLocations = new ArrayList<>();
     private boolean active = false;
     private Location leverLocation;
+
+    // PERF-02: dirty flag — defer computeInterior() until explicitly needed
+    private boolean interiorDirty = false;
 
     // Access control fields
     private UUID ownerId;
@@ -95,6 +105,7 @@ public class Portal {
     private void computeInterior() {
         interiorLocationKeys.clear();
         interiorLocations.clear();
+        interiorDirty = false;
 
         if (blockLocations.size() < 3) {
             return; // Need at least 3 blocks to form a frame with interior
@@ -117,7 +128,6 @@ public class Portal {
 
         // Determine the thin axis (the axis where the frame is 1-block thick)
         int spanX = maxX - minX;
-        int spanY = maxY - minY;
         int spanZ = maxZ - minZ;
 
         if (orientation == Orientation.VERTICAL) {
@@ -132,6 +142,16 @@ public class Portal {
         } else {
             // Horizontal portal: thin along Y — portal plane is XZ
             computeInteriorForPlane(world, minX, minY, minZ, maxX, maxY, maxZ, 'Y');
+        }
+    }
+
+    /**
+     * Ensure the interior is up-to-date. Call this before any read of interior data
+     * if blocks may have been added since the last computation.
+     */
+    public void ensureInteriorComputed() {
+        if (interiorDirty) {
+            computeInterior();
         }
     }
 
@@ -276,8 +296,10 @@ public class Portal {
 
     /**
      * Get the computed interior (passable) locations inside the portal frame.
+     * Ensures interior is up-to-date before returning.
      */
     public List<Location> getInteriorLocations() {
+        ensureInteriorComputed();
         return new ArrayList<>(this.interiorLocations);
     }
 
@@ -368,6 +390,7 @@ public class Portal {
      * Get the center location of this portal (center of the interior if available, else center of frame).
      */
     public Location getCenter() {
+        ensureInteriorComputed();
         List<Location> locs = interiorLocations.isEmpty() ? blockLocations : interiorLocations;
         if (locs.isEmpty()) {
             return null;
@@ -399,23 +422,16 @@ public class Portal {
 
     /**
      * Check if a player is inside this portal's interior space.
+     *
+     * BUG-04 / PERF-03 fix: removed the frame-block distance fallback that caused
+     * false-positive teleports when a player stood next to (but not inside) the frame.
+     * The interior key lookup is O(1) and sufficient.
      */
     public boolean containsPlayer(Player player) {
+        ensureInteriorComputed();
         Location playerLoc = player.getLocation();
-        World playerWorld = playerLoc.getWorld();
-        // Check interior locations (where player walks through)
         String playerKey = locationKey(playerLoc);
-        if (interiorLocationKeys.contains(playerKey)) {
-            return true;
-        }
-        // Fallback: distance check against frame blocks
-        for (Location loc : this.blockLocations) {
-            if (loc.getWorld() != null && loc.getWorld().equals(playerWorld)
-                && loc.distance(playerLoc) < PLAYER_DETECTION_RADIUS) {
-                return true;
-            }
-        }
-        return false;
+        return interiorLocationKeys.contains(playerKey);
     }
 
     /**
@@ -429,6 +445,7 @@ public class Portal {
      * Check if a location is inside this portal's interior (passable space).
      */
     public boolean isInteriorLocation(Location location) {
+        ensureInteriorComputed();
         return interiorLocationKeys.contains(locationKey(location));
     }
 
@@ -448,14 +465,18 @@ public class Portal {
 
     /**
      * Add a block location to this portal.
+     *
+     * PERF-02 fix: marks interior as dirty instead of recomputing immediately.
+     * Call {@link #ensureInteriorComputed()} (or {@link #getInteriorLocations()}) when
+     * the interior data is actually needed.
      */
     public void addBlockLocation(Location location) {
         String key = locationKey(location);
         if (!blockLocationKeys.contains(key)) {
             blockLocations.add(location.clone());
             blockLocationKeys.add(key);
-            // Recompute interior since frame changed
-            computeInterior();
+            // Mark dirty — defer BFS until interior is actually needed
+            interiorDirty = true;
         }
     }
 
@@ -470,79 +491,63 @@ public class Portal {
      * Get the number of interior blocks in this portal.
      */
     public int getInteriorBlockCount() {
+        ensureInteriorComputed();
         return interiorLocations.size();
     }
 
-    // ── JSON helpers ──
-
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static String safeWorldName(Location loc) {
-        World w = loc.getWorld();
-        return (w != null) ? w.getName() : "unknown";
-    }
+    // ── JSON serialization (MAINT-02: uses Gson instead of hand-rolled StringBuilder) ──
 
     /**
      * Convert portal to JSON string for saving.
+     * Uses Gson for correct escaping of all special characters.
      */
     public String toJson() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{");
-        sb.append("\"id\":\"").append(escapeJson(this.id)).append("\",");
-        sb.append("\"orientation\":\"").append(this.orientation.name()).append("\",");
-        sb.append("\"active\":").append(this.active).append(",");
+        JsonObject obj = new JsonObject();
+        obj.addProperty("id", this.id);
+        obj.addProperty("orientation", this.orientation.name());
+        obj.addProperty("active", this.active);
 
         if (ownerId != null) {
-            sb.append("\"owner\":\"").append(ownerId.toString()).append("\",");
+            obj.addProperty("owner", ownerId.toString());
         }
-        sb.append("\"accessMode\":\"").append(accessMode.name()).append("\",");
 
-        sb.append("\"allowedPlayers\":[");
-        int idx = 0;
+        obj.addProperty("accessMode", accessMode.name());
+
+        JsonArray allowedArr = new JsonArray();
         for (UUID uuid : allowedPlayers) {
-            if (idx > 0) sb.append(",");
-            sb.append("\"").append(uuid.toString()).append("\"");
-            idx++;
+            allowedArr.add(uuid.toString());
         }
-        sb.append("],");
+        obj.add("allowedPlayers", allowedArr);
 
-        sb.append("\"deniedPlayers\":[");
-        idx = 0;
+        JsonArray deniedArr = new JsonArray();
         for (UUID uuid : deniedPlayers) {
-            if (idx > 0) sb.append(",");
-            sb.append("\"").append(uuid.toString()).append("\"");
-            idx++;
+            deniedArr.add(uuid.toString());
         }
-        sb.append("],");
+        obj.add("deniedPlayers", deniedArr);
 
         if (leverLocation != null) {
-            sb.append("\"lever\":{");
-            sb.append("\"world\":\"").append(escapeJson(safeWorldName(leverLocation))).append("\",");
-            sb.append("\"x\":").append(leverLocation.getBlockX()).append(",");
-            sb.append("\"y\":").append(leverLocation.getBlockY()).append(",");
-            sb.append("\"z\":").append(leverLocation.getBlockZ());
-            sb.append("},");
+            JsonObject leverObj = new JsonObject();
+            World w = leverLocation.getWorld();
+            leverObj.addProperty("world", w != null ? w.getName() : "unknown");
+            leverObj.addProperty("x", leverLocation.getBlockX());
+            leverObj.addProperty("y", leverLocation.getBlockY());
+            leverObj.addProperty("z", leverLocation.getBlockZ());
+            obj.add("lever", leverObj);
         }
 
-        sb.append("\"blocks\":[");
-        for (int i = 0; i < blockLocations.size(); i++) {
-            Location loc = blockLocations.get(i);
-            sb.append("{");
-            sb.append("\"world\":\"").append(escapeJson(safeWorldName(loc))).append("\",");
-            sb.append("\"x\":").append(loc.getBlockX()).append(",");
-            sb.append("\"y\":").append(loc.getBlockY()).append(",");
-            sb.append("\"z\":").append(loc.getBlockZ());
-            sb.append("}");
-            if (i < blockLocations.size() - 1) {
-                sb.append(",");
-            }
+        JsonArray blocksArr = new JsonArray();
+        for (Location loc : blockLocations) {
+            JsonObject blockObj = new JsonObject();
+            World w = loc.getWorld();
+            blockObj.addProperty("world", w != null ? w.getName() : "unknown");
+            blockObj.addProperty("x", loc.getBlockX());
+            blockObj.addProperty("y", loc.getBlockY());
+            blockObj.addProperty("z", loc.getBlockZ());
+            blocksArr.add(blockObj);
         }
-        sb.append("]");
-        sb.append("}");
-        return sb.toString();
+        obj.add("blocks", blocksArr);
+
+        return GSON.toJson(obj);
     }
 
     @Override

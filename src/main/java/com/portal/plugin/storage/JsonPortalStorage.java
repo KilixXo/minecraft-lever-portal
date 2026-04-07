@@ -12,6 +12,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -20,6 +21,10 @@ import java.util.UUID;
  * JsonPortalStorage — persists portal data as a JSON file.
  *
  * File location: {@code plugins/LeverPortal/portals/portals.json}
+ *
+ * BUG-06 fix: saveAll() now writes to a temporary file first, then atomically
+ * renames it to the final path. This prevents data corruption if the server
+ * crashes or the JVM is killed mid-write.
  */
 public class JsonPortalStorage implements PortalStorage {
 
@@ -39,10 +44,18 @@ public class JsonPortalStorage implements PortalStorage {
         plugin.getLogger().info("[Storage] Using JSON file backend.");
     }
 
+    /**
+     * Save all portals and connections to portals.json.
+     *
+     * BUG-06 fix: writes to a temp file first, then atomically renames to the
+     * final path so a crash mid-write cannot corrupt the saved data.
+     */
     @Override
     public void saveAll(List<Portal> portals, List<PortalConnection> connections) {
         File portalFile = new File(dataFolder, "portals.json");
-        try (FileWriter writer = new FileWriter(portalFile)) {
+        File tempFile   = new File(dataFolder, "portals.json.tmp");
+
+        try (FileWriter writer = new FileWriter(tempFile)) {
             writer.write("{\n");
             writer.write("  \"portals\": [\n");
 
@@ -57,19 +70,37 @@ public class JsonPortalStorage implements PortalStorage {
 
             for (int i = 0; i < connections.size(); i++) {
                 PortalConnection conn = connections.get(i);
-                writer.write("    {\"portal1\":\"" + escapeJson(conn.getPortal1Id()) +
-                           "\",\"portal2\":\"" + escapeJson(conn.getPortal2Id()) + "\"}");
+                // Use Gson for safe string escaping
+                JsonObject obj = new JsonObject();
+                obj.addProperty("portal1", conn.getPortal1Id());
+                obj.addProperty("portal2", conn.getPortal2Id());
+                writer.write("    " + obj);
                 if (i < connections.size() - 1) writer.write(",");
                 writer.write("\n");
             }
 
             writer.write("  ]\n");
             writer.write("}\n");
+        } catch (IOException e) {
+            plugin.getLogger().severe("[Storage] Failed to write temp portals file: " + e.getMessage());
+            return;
+        }
 
+        // BUG-06 fix: atomic rename — replaces the old file only after the new one is fully written
+        try {
+            Files.move(tempFile.toPath(), portalFile.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE);
             plugin.getLogger().info("[Storage] Saved " + portals.size() + " portals and " +
                                    connections.size() + " connections to JSON.");
         } catch (IOException e) {
-            plugin.getLogger().severe("[Storage] Failed to save portals.json: " + e.getMessage());
+            plugin.getLogger().severe("[Storage] Failed to atomically replace portals.json: " + e.getMessage());
+            // Attempt non-atomic fallback
+            try {
+                Files.move(tempFile.toPath(), portalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException ex) {
+                plugin.getLogger().severe("[Storage] Fallback rename also failed: " + ex.getMessage());
+            }
         }
     }
 
@@ -209,10 +240,5 @@ public class JsonPortalStorage implements PortalStorage {
             plugin.getLogger().severe("[Storage] Failed to parse portal entry: " + e.getMessage());
             return null;
         }
-    }
-
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

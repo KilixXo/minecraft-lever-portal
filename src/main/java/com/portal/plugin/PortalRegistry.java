@@ -1,6 +1,9 @@
 package com.portal.plugin;
 
+import com.portal.plugin.storage.DatabaseConfig;
 import com.portal.plugin.storage.JsonPortalStorage;
+import com.portal.plugin.storage.MySQLPortalStorage;
+import com.portal.plugin.storage.PostgreSQLPortalStorage;
 import com.portal.plugin.storage.PortalStorage;
 import com.portal.plugin.storage.SQLitePortalStorage;
 import org.bukkit.Bukkit;
@@ -20,42 +23,76 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class PortalRegistry {
 
-    // ── Configurable constants (M-9) ──
-    public static final int TELEPORT_COOLDOWN_TICKS = 40;       // 2 seconds
-    public static final int MIN_PORTAL_BLOCKS = 2;
-    public static final int MAX_PORTAL_BLOCKS = 100;            // M-1: block count limit
-    public static final double MIN_LINK_DISTANCE = 3.0;
+    // ── Configurable constants — read from config.yml (MAINT-01 fix) ──
+    // Defaults are used if the config key is absent.
+    private int teleportCooldownTicks;
+    private int minPortalBlocks;
+    private int maxPortalBlocks;
+    private double minLinkDistance;
+
+    // Keep public static accessors for backward compatibility (e.g., LeverHandler)
+    public int getTeleportCooldownTicks() { return teleportCooldownTicks; }
+    public int getMinPortalBlocks()       { return minPortalBlocks; }
+    public int getMaxPortalBlocks()       { return maxPortalBlocks; }
+    public double getMinLinkDistance()    { return minLinkDistance; }
 
     private final Main plugin;
     private final EconomyManager economyManager;
     private PortalAccessManager accessManager;
     private PortalStorage storage;
-    private final Map<String, Portal> portals = new HashMap<>();
-    private final Set<PortalConnection> connections = new HashSet<>();
-    private final Map<UUID, PortalCreationSession> creationSessions = new HashMap<>();
+
+    // SEC-05 fix: use ConcurrentHashMap for thread-safe access
+    private final Map<String, Portal> portals = new ConcurrentHashMap<>();
+    private final Set<PortalConnection> connections = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, PortalCreationSession> creationSessions = new ConcurrentHashMap<>();
     private final Set<UUID> recentlyTeleported = ConcurrentHashMap.newKeySet();
     private final Map<UUID, String> lastPortalUsed = new ConcurrentHashMap<>();
 
-    // ── Spatial index for fast portal lookup (M-2) ──
-    private final Map<String, Set<Portal>> portalsByChunk = new HashMap<>();
+    // ── Spatial index for fast portal lookup (M-2) — also ConcurrentHashMap ──
+    private final Map<String, Set<Portal>> portalsByChunk = new ConcurrentHashMap<>();
 
     public PortalRegistry(Main plugin, EconomyManager economyManager) {
         this.plugin = plugin;
         this.economyManager = economyManager;
-        // Storage backend is selected in initStorage() after config is loaded
+        loadConstants();
+    }
+
+    /**
+     * MAINT-01 fix: load configurable constants from config.yml instead of hardcoding.
+     */
+    private void loadConstants() {
+        teleportCooldownTicks = plugin.getConfig().getInt("portal.teleport_cooldown_ticks", 40);
+        minPortalBlocks       = plugin.getConfig().getInt("portal.min_blocks", 2);
+        maxPortalBlocks       = plugin.getConfig().getInt("portal.max_blocks", 100);
+        minLinkDistance       = plugin.getConfig().getDouble("portal.min_link_distance", 3.0);
     }
 
     /**
      * Initialise the storage backend based on config.yml {@code storage.type}.
      * Must be called before loadAllPortals() / saveAllPortals().
+     *
+     * <p>Supported values for {@code storage.type}:
+     * <ul>
+     *   <li>{@code json}       — JSON file (default, no extra setup)</li>
+     *   <li>{@code sqlite}     — local SQLite file</li>
+     *   <li>{@code mysql}      — remote MySQL server</li>
+     *   <li>{@code mariadb}    — remote MariaDB server</li>
+     *   <li>{@code postgresql} — remote PostgreSQL server</li>
+     * </ul>
      */
     public void initStorage() {
-        String type = plugin.getConfig().getString("storage.type", "json").toLowerCase();
-        switch (type) {
-            case "sqlite":
+        DatabaseConfig dbConfig = new DatabaseConfig(plugin);
+        switch (dbConfig.getType()) {
+            case SQLITE:
                 this.storage = new SQLitePortalStorage(plugin);
                 break;
-            case "json":
+            case MYSQL:
+            case MARIADB:
+                this.storage = new MySQLPortalStorage(plugin, dbConfig);
+                break;
+            case POSTGRESQL:
+                this.storage = new PostgreSQLPortalStorage(plugin, dbConfig);
+                break;
             default:
                 this.storage = new JsonPortalStorage(plugin);
                 break;
@@ -79,7 +116,7 @@ public class PortalRegistry {
         this.accessManager = accessManager;
     }
 
-    // ── Spatial index helpers (M-2) ──
+    // ── Spatial index helpers ──
 
     private static String chunkKey(Location loc) {
         World w = loc.getWorld();
@@ -95,12 +132,12 @@ public class PortalRegistry {
         // Index frame blocks
         for (Location loc : portal.getBlockLocations()) {
             String key = chunkKey(loc);
-            portalsByChunk.computeIfAbsent(key, k -> new HashSet<>()).add(portal);
+            portalsByChunk.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()).add(portal);
         }
         // Index interior locations (the passable space inside the frame)
         for (Location loc : portal.getInteriorLocations()) {
             String key = chunkKey(loc);
-            portalsByChunk.computeIfAbsent(key, k -> new HashSet<>()).add(portal);
+            portalsByChunk.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()).add(portal);
         }
     }
 
@@ -159,7 +196,7 @@ public class PortalRegistry {
     }
 
     /**
-     * Find all portals at a given location (M-2: chunk-indexed O(1) lookup).
+     * Find all portals at a given location (chunk-indexed O(1) lookup).
      * Checks both frame blocks and interior locations so players are detected
      * when walking through the portal opening.
      */
@@ -173,6 +210,49 @@ public class PortalRegistry {
                 if (p.isInteriorLocation(loc) || p.containsLocation(loc)) {
                     result.add(p);
                 }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * PERF-01 fix: Find portals whose center is within {@code radius} blocks of {@code loc}.
+     * Uses the chunk spatial index to avoid iterating all portals.
+     *
+     * @param loc    center of the search area
+     * @param radius maximum distance from portal center to loc
+     * @return list of matching portals (may be empty, never null)
+     */
+    public List<Portal> findPortalsNear(Location loc, double radius) {
+        Set<Portal> candidates = new HashSet<>();
+        World locWorld = loc.getWorld();
+        if (locWorld == null) return new ArrayList<>();
+
+        // Collect candidates from nearby chunks
+        int chunkRadius = (int) Math.ceil(radius / 16.0) + 1;
+        int centerChunkX = loc.getBlockX() >> 4;
+        int centerChunkZ = loc.getBlockZ() >> 4;
+        String worldName = locWorld.getName();
+
+        for (int cx = centerChunkX - chunkRadius; cx <= centerChunkX + chunkRadius; cx++) {
+            for (int cz = centerChunkZ - chunkRadius; cz <= centerChunkZ + chunkRadius; cz++) {
+                String key = worldName + "," + cx + "," + cz;
+                Set<Portal> chunk = portalsByChunk.get(key);
+                if (chunk != null) {
+                    candidates.addAll(chunk);
+                }
+            }
+        }
+
+        // Filter by actual distance
+        List<Portal> result = new ArrayList<>();
+        for (Portal p : candidates) {
+            Location center = p.getCenter();
+            if (center == null) continue;
+            World pWorld = center.getWorld();
+            if (pWorld == null || !pWorld.equals(locWorld)) continue;
+            if (center.distance(loc) <= radius) {
+                result.add(p);
             }
         }
         return result;
@@ -208,7 +288,7 @@ public class PortalRegistry {
     }
 
     /**
-     * Check if two portals can be connected (M-4: null-safe world check).
+     * Check if two portals can be connected (null-safe world check).
      */
     private boolean isValidConnection(Portal source, Portal target) {
         // Must have same orientation
@@ -222,7 +302,7 @@ public class PortalRegistry {
             return false;
         }
 
-        // M-4: null-safe world comparison
+        // Null-safe world comparison
         World srcWorld = sourceCenter.getWorld();
         World tgtWorld = targetCenter.getWorld();
         if (srcWorld == null || tgtWorld == null || !srcWorld.equals(tgtWorld)) {
@@ -231,7 +311,7 @@ public class PortalRegistry {
 
         // Distance should be reasonable (not too close)
         double distance = sourceCenter.distance(targetCenter);
-        return distance >= MIN_LINK_DISTANCE;
+        return distance >= minLinkDistance;
     }
 
     /**
@@ -260,9 +340,9 @@ public class PortalRegistry {
 
                 // Don't add air or lever blocks
                 if (clicked.getType() != Material.AIR && clicked.getType() != Material.LEVER) {
-                    // M-1: enforce block limit
-                    if (session.getBlockCount() >= MAX_PORTAL_BLOCKS) {
-                        player.sendMessage("§cPortal cannot have more than " + MAX_PORTAL_BLOCKS + " blocks!");
+                    // Enforce block limit
+                    if (session.getBlockCount() >= maxPortalBlocks) {
+                        player.sendMessage("§cPortal cannot have more than " + maxPortalBlocks + " blocks!");
                         event.setCancelled(true);
                         return;
                     }
@@ -287,8 +367,8 @@ public class PortalRegistry {
             return;
         }
 
-        if (session.getBlockCount() < MIN_PORTAL_BLOCKS) {
-            player.sendMessage("§cPortal must have at least " + MIN_PORTAL_BLOCKS + " blocks!");
+        if (session.getBlockCount() < minPortalBlocks) {
+            player.sendMessage("§cPortal must have at least " + minPortalBlocks + " blocks!");
             return;
         }
 
@@ -322,7 +402,12 @@ public class PortalRegistry {
     }
 
     /**
-     * Handle player entering a portal (C-2: fixed cooldown logic with boolean flag).
+     * Handle player entering a portal.
+     *
+     * BUG-02 fix: when the economy charge fails, we no longer use a bare {@code return}
+     * that bypassed the cooldown guard. Instead we set a brief cooldown to prevent
+     * the "insufficient funds" message from firing on every block-move event while
+     * the player stands inside the portal.
      */
     public void handlePlayerEnteringPortal(Player player) {
         if (player == null) return;
@@ -370,7 +455,13 @@ public class PortalRegistry {
 
                 // Check and charge for teleportation
                 if (!economyManager.chargeTeleport(player, portal.getId())) {
-                    return; // Player doesn't have enough diamonds
+                    // BUG-02 fix: apply a brief cooldown so the message is not spammed
+                    // on every PlayerMoveEvent while the player stands in the portal.
+                    teleported = true; // prevents immediate cooldown removal in finally
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        recentlyTeleported.remove(playerId);
+                    }, 20L); // 1-second cooldown before next charge attempt
+                    break;
                 }
 
                 Location targetLocation = connectedPortal.getCenter();
@@ -394,12 +485,13 @@ public class PortalRegistry {
                 Bukkit.getScheduler().runTaskLater(plugin, () -> {
                     recentlyTeleported.remove(playerId);
                     lastPortalUsed.remove(playerId);
-                }, TELEPORT_COOLDOWN_TICKS);
+                }, teleportCooldownTicks);
 
                 break; // Only teleport through one portal
             }
         } finally {
-            // C-2 fix: only remove from cooldown immediately if no teleport happened
+            // Only remove from cooldown immediately if no teleport happened
+            // (and no charge-failure cooldown was scheduled)
             if (!teleported) {
                 recentlyTeleported.remove(playerId);
             }
@@ -448,7 +540,7 @@ public class PortalRegistry {
     }
 
     /**
-     * Get loaded lever locations for LeverHandler to restore associations (H-7).
+     * Get loaded lever locations for LeverHandler to restore associations.
      */
     public Map<String, Location> getLeverAssociations() {
         Map<String, Location> result = new HashMap<>();
@@ -463,11 +555,15 @@ public class PortalRegistry {
 
     /**
      * Portal creation session helper class.
+     *
+     * BUG-03 fix: uses a HashSet for O(1) duplicate detection instead of O(n) linear scan.
      */
     private static class PortalCreationSession {
         private final String name;
         private final Portal.Orientation orientation;
         private final List<Location> blocks = new ArrayList<>();
+        // BUG-03 fix: HashSet for O(1) duplicate detection
+        private final Set<String> blockKeys = new HashSet<>();
 
         public PortalCreationSession(String name, Portal.Orientation orientation) {
             this.name = name;
@@ -483,16 +579,17 @@ public class PortalRegistry {
         }
 
         public void addBlock(Location location) {
-            // Check if block already added
-            for (Location loc : blocks) {
-                if (loc.getBlockX() == location.getBlockX() &&
-                    loc.getBlockY() == location.getBlockY() &&
-                    loc.getBlockZ() == location.getBlockZ() &&
-                    Objects.equals(loc.getWorld(), location.getWorld())) {
-                    return; // Already added
-                }
+            // BUG-03 fix: O(1) duplicate check using string key
+            String key = locationKey(location);
+            if (blockKeys.add(key)) {
+                blocks.add(location.clone());
             }
-            blocks.add(location.clone());
+        }
+
+        private static String locationKey(Location loc) {
+            World w = loc.getWorld();
+            String worldName = (w != null) ? w.getName() : "unknown";
+            return worldName + "," + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
         }
 
         public List<Location> getBlocks() {

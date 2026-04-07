@@ -12,15 +12,13 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
  * LeverHandler - Manages lever interactions for portal activation.
  */
 public class LeverHandler implements Listener {
-
-    // M-9: max lever-to-portal association distance (configurable constant)
-    public static final double MAX_LEVER_DISTANCE = 10.0;
 
     private final Main plugin;
     private final PortalRegistry registry;
@@ -103,37 +101,43 @@ public class LeverHandler implements Listener {
 
     /**
      * Check if a lever can be associated with a nearby portal.
+     *
+     * PERF-01 fix: uses the chunk-based spatial index ({@link PortalRegistry#findPortalsNear})
+     * instead of iterating all portals — O(1) chunk lookup vs O(n×m) full scan.
+     *
+     * BUG-05 fix: checks that the player owns the portal (or has admin permission)
+     * before associating the lever, preventing unauthorized toggle control.
      */
     private void checkAndAssociateLever(Player player, Location leverLoc) {
-        for (String portalName : registry.getAllPortalNames()) {
-            Portal portal = registry.getPortal(portalName);
-            if (portal == null) continue;
+        double maxDist = plugin.getConfig().getDouble("portal.max_lever_distance", 10.0);
 
-            Location portalCenter = portal.getCenter();
-            if (portalCenter == null) continue;
+        // PERF-01: use spatial index for O(1) chunk lookup
+        List<Portal> nearby = registry.findPortalsNear(leverLoc, maxDist);
 
-            World portalWorld = portalCenter.getWorld();
-            World leverWorld = leverLoc.getWorld();
+        for (Portal portal : nearby) {
+            // BUG-05 fix: ownership / admin check before associating
+            boolean isAdmin = player.hasPermission("leverportal.admin");
+            boolean isOwner = portal.isOwner(player.getUniqueId());
 
-            // H-6 guard: ensure same world before calling distance()
-            if (portalWorld != null && portalWorld.equals(leverWorld)
-                && portalCenter.distance(leverLoc) <= MAX_LEVER_DISTANCE) {
-
-                // Associate this lever with the portal (H-3: string key)
-                leverToPortal.put(locKey(leverLoc), portal.getId());
-                portal.setLeverLocation(leverLoc);
-
-                player.sendMessage("§aLever associated with portal '" + portal.getId() + "'!");
-                player.sendMessage("§eToggle the lever to activate/deactivate the portal.");
+            if (!isAdmin && !isOwner) {
+                player.sendMessage("§cYou don't own portal '" + portal.getId() + "' and cannot associate a lever with it.");
                 return;
             }
+
+            // Associate this lever with the portal
+            leverToPortal.put(locKey(leverLoc), portal.getId());
+            portal.setLeverLocation(leverLoc);
+
+            player.sendMessage("§aLever associated with portal '" + portal.getId() + "'!");
+            player.sendMessage("§eToggle the lever to activate/deactivate the portal.");
+            return;
         }
 
-        player.sendMessage("§cNo portal found nearby. Create a portal first, then place a lever within " + (int) MAX_LEVER_DISTANCE + " blocks.");
+        player.sendMessage("§cNo portal found nearby. Create a portal first, then place a lever within " + (int) maxDist + " blocks.");
     }
 
     /**
-     * Associate a lever with a specific portal (H-7: called during load to restore associations).
+     * Associate a lever with a specific portal (called during load to restore associations).
      */
     public void associateLever(Location leverLoc, String portalId) {
         leverToPortal.put(locKey(leverLoc), portalId);

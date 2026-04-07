@@ -60,6 +60,13 @@ public class PortalAccessManager {
     
     /**
      * Check if a player can use a specific portal.
+     *
+     * MAINT-05 fix: removed the redundant {@code isEntityTypeAllowed(EntityType.PLAYER)}
+     * check. Players are always of type PLAYER; if the admin has removed PLAYER from the
+     * allowed entity list that is a misconfiguration that would block all players entirely.
+     * The entity filtering feature is intended for non-player entities (future Paper API
+     * EntityMoveEvent support), not for gating player access — that is handled by the
+     * portal's own access mode and allowed/denied lists.
      */
     public boolean canPlayerUsePortal(Player player, Portal portal) {
         UUID playerId = player.getUniqueId();
@@ -69,12 +76,7 @@ public class PortalAccessManager {
             return true;
         }
         
-        // Check entity type filtering
-        if (!isEntityTypeAllowed(EntityType.PLAYER)) {
-            return false;
-        }
-        
-        // Check portal-specific permissions
+        // Check portal-specific permissions (access mode, whitelist, blacklist, etc.)
         return portal.canPlayerUse(playerId);
     }
     

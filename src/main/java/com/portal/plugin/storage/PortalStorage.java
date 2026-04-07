@@ -6,13 +6,19 @@ import com.portal.plugin.PortalConnection;
 import java.util.List;
 
 /**
- * PortalStorage - Abstraction layer for portal data persistence.
+ * PortalStorage — abstraction layer for portal data persistence.
  *
- * Implementations:
- * - {@link JsonPortalStorage} — stores data in a JSON file (default)
- * - {@link SQLitePortalStorage} — stores data in a local SQLite database
+ * <p>Implementations:
+ * <ul>
+ *   <li>{@link JsonPortalStorage}       — JSON file (default, no extra setup)</li>
+ *   <li>{@link SQLitePortalStorage}     — local SQLite database file</li>
+ *   <li>{@link MySQLPortalStorage}      — remote MySQL or MariaDB server</li>
+ *   <li>{@link PostgreSQLPortalStorage} — remote PostgreSQL server</li>
+ * </ul>
  *
- * The active backend is selected via {@code storage.type} in config.yml.
+ * <p>The active backend is selected via {@code storage.type} in {@code config.yml}.
+ * Connection parameters (host, port, username, password, database name) are read
+ * from the {@code storage.database} section by {@link DatabaseConfig}.
  */
 public interface PortalStorage {
 
