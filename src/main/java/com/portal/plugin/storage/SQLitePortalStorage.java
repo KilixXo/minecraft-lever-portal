@@ -48,6 +48,13 @@ public class SQLitePortalStorage implements PortalStorage {
             Class.forName("org.sqlite.JDBC");
             connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             connection.setAutoCommit(false);
+
+            // RT-07 fix: SQLite disables foreign key enforcement by default.
+            // Without this pragma, ON DELETE CASCADE silently does nothing.
+            try (java.sql.Statement pragma = connection.createStatement()) {
+                pragma.execute("PRAGMA foreign_keys = ON");
+            }
+
             createTables();
             plugin.getLogger().info("[Storage] Using SQLite backend: " + dbFile.getName());
         } catch (ClassNotFoundException e) {

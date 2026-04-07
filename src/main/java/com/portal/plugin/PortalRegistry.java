@@ -272,6 +272,8 @@ public class PortalRegistry {
 
     /**
      * Connect two portals together.
+     *
+     * RT-05 fix: save immediately after linking so the connection survives a crash.
      */
     public boolean connectPortals(Portal source, Portal target) {
         if (!isValidConnection(source, target)) {
@@ -284,6 +286,10 @@ public class PortalRegistry {
         // Create new connection
         PortalConnection conn = new PortalConnection(source.getId(), target.getId());
         this.connections.add(conn);
+
+        // RT-05 fix: persist immediately (async to avoid blocking the main thread)
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::saveAllPortals);
+
         return true;
     }
 
@@ -378,6 +384,10 @@ public class PortalRegistry {
         indexPortal(portal);
         creationSessions.remove(playerId);
 
+        // RT-04 fix: save immediately after creation so the portal survives a crash
+        // before the next clean shutdown. Use async save to avoid blocking the main thread.
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::saveAllPortals);
+
         int interiorCount = portal.getInteriorBlockCount();
         player.sendMessage("§aPortal '" + portal.getId() + "' created with " + portal.getBlockCount() + " frame blocks!");
         if (interiorCount > 0) {
@@ -391,13 +401,21 @@ public class PortalRegistry {
 
     /**
      * Cancel portal creation for a player.
+     *
+     * RT-02 fix: only send a message if the player is still online.
+     * This method is also called from PlayerQuitEvent where the player object
+     * may no longer be able to receive messages reliably.
      */
     public void cancelPortalCreation(Player player) {
         UUID playerId = player.getUniqueId();
-        if (creationSessions.remove(playerId) != null) {
-            player.sendMessage("§ePortal creation cancelled.");
-        } else {
-            player.sendMessage("§cYou don't have an active portal creation session!");
+        boolean hadSession = creationSessions.remove(playerId) != null;
+        // Only send message if player is still connected (not during quit processing)
+        if (player.isOnline()) {
+            if (hadSession) {
+                player.sendMessage("§ePortal creation cancelled.");
+            } else {
+                player.sendMessage("§cYou don't have an active portal creation session!");
+            }
         }
     }
 

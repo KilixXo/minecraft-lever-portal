@@ -46,9 +46,16 @@ public class Main extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new PortalInteractListener(portalRegistry), this);
 
         // Register command handler (MAINT-03: extracted into dedicated class)
+        // RT-01 fix: guard against getCommand() returning null (e.g., if plugin.yml is missing
+        // the command declaration or the plugin is loaded in an unexpected way).
         PortalCommandHandler commandHandler = new PortalCommandHandler(
             this, portalRegistry, economyManager, accessManager);
-        getCommand("portal").setExecutor(commandHandler);
+        org.bukkit.command.PluginCommand portalCmd = getCommand("portal");
+        if (portalCmd != null) {
+            portalCmd.setExecutor(commandHandler);
+        } else {
+            getLogger().severe("Could not register /portal command — is 'portal' declared in plugin.yml?");
+        }
 
         // Load saved portals
         portalRegistry.loadAllPortals();
