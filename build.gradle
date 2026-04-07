@@ -61,12 +61,19 @@ shadowJar {
     relocate 'org.mariadb',         'com.portal.libs.mariadb'
     relocate 'org.postgresql',      'com.portal.libs.postgresql'
 
-    // Exclude unnecessary files from the fat jar
+    // Exclude signature files that would make the fat jar invalid
     exclude 'META-INF/*.SF'
     exclude 'META-INF/*.DSA'
     exclude 'META-INF/*.RSA'
     exclude 'META-INF/LICENSE*'
     exclude 'META-INF/NOTICE*'
+
+    // Merge META-INF/services/* files from all jars instead of overwriting.
+    // This is critical for JDBC driver auto-discovery via ServiceLoader:
+    // without it, only one of the four drivers (SQLite/MySQL/MariaDB/PG)
+    // would be registered in the fat jar, causing ClassNotFoundException
+    // for the other three drivers at runtime.
+    mergeServiceFiles()
 }
 
 // Make 'build' produce the shadow jar by default

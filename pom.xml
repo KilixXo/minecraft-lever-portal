@@ -47,6 +47,32 @@
                         </goals>
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <!--
+                                  ServicesResourceTransformer merges all META-INF/services/* files
+                                  from all shaded jars instead of letting one overwrite the others.
+                                  This is critical for JDBC driver auto-discovery via ServiceLoader:
+                                  without it, only one of the four drivers (SQLite/MySQL/MariaDB/PG)
+                                  would be registered in the fat jar.
+                                -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <!--
+                                  ManifestResourceTransformer sets the main manifest attributes
+                                  and suppresses the duplicate MANIFEST.MF warning.
+                                -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <!-- Exclude signature files that would make the fat jar invalid -->
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                         </configuration>
                     </execution>
                 </executions>
