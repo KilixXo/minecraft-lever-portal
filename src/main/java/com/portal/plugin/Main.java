@@ -29,6 +29,10 @@ public class Main extends JavaPlugin {
         // Save default config (must happen before any component reads config)
         saveDefaultConfig();
 
+        // FIX-9: apply configurable player detection radius before any Portal is created
+        double detectionRadius = getConfig().getDouble("portal.player_detection_radius", 1.5);
+        Portal.setPlayerDetectionRadius(detectionRadius);
+
         // Initialize core systems
         this.economyManager = new EconomyManager(this);
         this.accessManager  = new PortalAccessManager(this);

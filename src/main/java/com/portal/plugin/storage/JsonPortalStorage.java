@@ -104,61 +104,60 @@ public class JsonPortalStorage implements PortalStorage {
         }
     }
 
-    @Override
-    public List<Portal> loadPortals() {
-        List<Portal> result = new ArrayList<>();
+    /**
+     * Read and parse {@code portals.json}, returning the root {@link JsonObject},
+     * or {@code null} if the file does not exist or is malformed.
+     *
+     * <p>Note: each call performs a fresh disk read. Callers that need both portals
+     * and connections should invoke {@link #loadPortals()} and
+     * {@link #loadConnections()} in sequence; a shared load path (e.g.
+     * {@code PortalStorage.loadAll()}) would eliminate the second read entirely.
+     */
+    private JsonObject readRoot() {
         File portalFile = new File(dataFolder, "portals.json");
-        if (!portalFile.exists()) {
-            return result;
-        }
-
+        if (!portalFile.exists()) return null;
         try {
             String content = Files.readString(portalFile.toPath());
-            JsonObject root = JsonParser.parseString(content).getAsJsonObject();
-
-            if (!root.has("portals")) return result;
-
-            for (JsonElement el : root.getAsJsonArray("portals")) {
-                Portal portal = parsePortal(el.getAsJsonObject());
-                if (portal != null) {
-                    result.add(portal);
-                }
-            }
+            return JsonParser.parseString(content).getAsJsonObject();
         } catch (IOException e) {
             plugin.getLogger().severe("[Storage] Failed to read portals.json: " + e.getMessage());
         } catch (JsonSyntaxException | IllegalStateException e) {
             plugin.getLogger().severe("[Storage] Failed to parse portals.json: " + e.getMessage());
         }
+        return null;
+    }
 
+    @Override
+    public List<Portal> loadPortals() {
+        List<Portal> result = new ArrayList<>();
+        JsonObject root = readRoot();
+        if (root == null || !root.has("portals")) return result;
+
+        for (JsonElement el : root.getAsJsonArray("portals")) {
+            Portal portal = parsePortal(el.getAsJsonObject());
+            if (portal != null) {
+                result.add(portal);
+            }
+        }
         return result;
     }
 
     @Override
     public List<PortalConnection> loadConnections() {
         List<PortalConnection> result = new ArrayList<>();
-        File portalFile = new File(dataFolder, "portals.json");
-        if (!portalFile.exists()) {
-            return result;
-        }
+        JsonObject root = readRoot();
+        if (root == null || !root.has("connections")) return result;
 
-        try {
-            String content = Files.readString(portalFile.toPath());
-            JsonObject root = JsonParser.parseString(content).getAsJsonObject();
-
-            if (!root.has("connections")) return result;
-
-            for (JsonElement el : root.getAsJsonArray("connections")) {
+        for (JsonElement el : root.getAsJsonArray("connections")) {
+            try {
                 JsonObject obj = el.getAsJsonObject();
                 String p1 = obj.get("portal1").getAsString();
                 String p2 = obj.get("portal2").getAsString();
                 result.add(new PortalConnection(p1, p2));
+            } catch (JsonSyntaxException | IllegalStateException e) {
+                plugin.getLogger().severe("[Storage] Failed to parse a connection entry: " + e.getMessage());
             }
-        } catch (IOException e) {
-            plugin.getLogger().severe("[Storage] Failed to read connections from portals.json: " + e.getMessage());
-        } catch (JsonSyntaxException | IllegalStateException e) {
-            plugin.getLogger().severe("[Storage] Failed to parse connections from portals.json: " + e.getMessage());
         }
-
         return result;
     }
 

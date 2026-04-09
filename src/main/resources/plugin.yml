@@ -8,7 +8,7 @@ description: Create linked portals activated by levers with diamond-based econom
 commands:
   portal:
     description: Portal management commands
-    usage: /<command> <create|link|remove|list|setcost|setplayercost|cost> [args]
+    usage: /<command> <create|link|remove|list|setcost|setplayercost|cost|reload> [args]
     permission: leverportal.use
     permission-message: You don't have permission to use this command
 
@@ -26,5 +26,10 @@ permissions:
     description: Allows removing portals
     default: op
   leverportal.admin:
-    description: Allows managing portal costs and economy
+    description: Allows managing portal costs and economy (includes all other leverportal permissions)
     default: op
+    children:
+      leverportal.use: true
+      leverportal.create: true
+      leverportal.link: true
+      leverportal.remove: true

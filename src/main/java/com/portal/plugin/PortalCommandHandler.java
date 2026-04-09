@@ -39,19 +39,64 @@ public class PortalCommandHandler implements CommandExecutor {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!(sender instanceof Player)) {
-            sender.sendMessage("This command can only be used by players.");
-            return true;
-        }
-
-        Player player = (Player) sender;
+        // FIX-A7: admin-only subcommands (list, setcost, setplayercost, reload) are now
+        // accessible from the console. Player-specific subcommands (create, confirm, finish,
+        // cancel, cost, link, remove, access) still require a player sender.
+        boolean isConsole = !(sender instanceof Player);
 
         if (args.length == 0) {
-            sendHelp(player);
+            if (isConsole) {
+                sender.sendMessage("Portal Plugin — console usage: /portal <list|setcost|setplayercost|reload> [args]");
+            } else {
+                sendHelp((Player) sender);
+            }
             return true;
         }
 
         String subCommand = args[0].toLowerCase();
+
+        // FIX-A8: /portal reload is available to console and admins
+        if (subCommand.equals("reload")) {
+            if (isConsole || sender.hasPermission("leverportal.admin")) {
+                plugin.reloadConfig();
+                economyManager.loadConfig();
+                accessManager.loadConfiguration();
+                portalRegistry.reloadConstants();
+                sender.sendMessage("§aLeverPortal configuration reloaded.");
+            } else {
+                sender.sendMessage("§cYou don't have permission to reload the plugin.");
+            }
+            return true;
+        }
+
+        // FIX-A7: list, setcost, setplayercost can be run from console
+        if (isConsole) {
+            switch (subCommand) {
+                case "list":
+                    handleListCommandConsole(sender);
+                    break;
+                case "setcost":
+                    if (args.length < 3) {
+                        sender.sendMessage("Usage: /portal setcost <portal> <cost>");
+                        return true;
+                    }
+                    handleSetCostCommandConsole(sender, args[1], args[2]);
+                    break;
+                case "setplayercost":
+                    if (args.length < 4) {
+                        sender.sendMessage("Usage: /portal setplayercost <player> <portal> <cost>");
+                        return true;
+                    }
+                    handleSetPlayerCostCommandConsole(sender, args[1], args[2], args[3]);
+                    break;
+                default:
+                    sender.sendMessage("Console usage: /portal <list|setcost|setplayercost|reload> [args]");
+                    break;
+            }
+            return true;
+        }
+
+        Player player = (Player) sender;
 
         switch (subCommand) {
             case "create":
@@ -135,6 +180,72 @@ public class PortalCommandHandler implements CommandExecutor {
         return true;
     }
 
+    // ── Console-accessible command handlers ─────────────────────────────────────
+
+    /** FIX-A7: list portals from console without colour codes (plain text). */
+    private void handleListCommandConsole(CommandSender sender) {
+        List<String> names = portalRegistry.getAllPortalNames();
+        if (names.isEmpty()) {
+            sender.sendMessage("No portals created yet.");
+            return;
+        }
+        sender.sendMessage("=== Active Portals ===");
+        for (String name : names) {
+            Portal portal = portalRegistry.getPortal(name);
+            if (portal == null) continue;
+            String status = portal.isActive() ? "[ACTIVE]" : "[INACTIVE]";
+            String connectedTo = portalRegistry.findConnectedPortalId(portal);
+            String connection = connectedTo != null ? " -> " + connectedTo : "";
+            sender.sendMessage(name + " " + status + connection);
+        }
+    }
+
+    /** FIX-A7: set portal cost from console. */
+    private void handleSetCostCommandConsole(CommandSender sender, String portalName, String costStr) {
+        try {
+            int cost = Integer.parseInt(costStr);
+            if (cost < 0) {
+                sender.sendMessage("Cost must be zero or positive.");
+                return;
+            }
+            economyManager.setPortalCost(portalName, cost);
+            sender.sendMessage("Set cost for portal '" + portalName + "' to " + cost + " diamonds.");
+        } catch (NumberFormatException e) {
+            sender.sendMessage("Invalid cost value. Must be a number.");
+        }
+    }
+
+    /** FIX-A7: set player-specific portal cost from console. */
+    private void handleSetPlayerCostCommandConsole(CommandSender sender, String playerName, String portalName, String costStr) {
+        // Look up the player — must have joined the server at least once
+        Player online = Bukkit.getPlayerExact(playerName);
+        OfflinePlayer target;
+        if (online != null) {
+            target = online;
+        } else {
+            @SuppressWarnings("deprecation")
+            OfflinePlayer offline = Bukkit.getOfflinePlayer(playerName);
+            if (offline.getName() == null) {
+                sender.sendMessage("Warning: Player '" + playerName + "' has never joined this server. Operation aborted.");
+                return;
+            }
+            target = offline;
+        }
+
+        try {
+            int cost = Integer.parseInt(costStr);
+            if (cost < 0) {
+                sender.sendMessage("Cost must be zero or positive.");
+                return;
+            }
+            String displayName = target.getName() != null ? target.getName() : playerName;
+            economyManager.setPlayerPortalCost(target.getUniqueId(), portalName, cost);
+            sender.sendMessage("Set cost for player '" + displayName + "' on portal '" + portalName + "' to " + cost + " diamonds.");
+        } catch (NumberFormatException e) {
+            sender.sendMessage("Invalid cost value. Must be a number.");
+        }
+    }
+
     private void sendHelp(Player player) {
         player.sendMessage("§6=== Portal Plugin Commands ===");
         player.sendMessage("§e/portal create <name> <vertical|horizontal> - Create a new portal");
@@ -215,7 +326,9 @@ public class PortalCommandHandler implements CommandExecutor {
         if (portalRegistry.connectPortals(portal1, portal2)) {
             player.sendMessage("§aPortals linked successfully!");
         } else {
-            player.sendMessage("§cCannot link these portals. They must have the same orientation and be at a reasonable distance.");
+            // FIX-A6: provide a specific reason so the player knows what to fix
+            String reason = portalRegistry.getConnectionFailureReason(portal1, portal2);
+            player.sendMessage("§cCannot link these portals: " + reason);
         }
     }
 
@@ -276,17 +389,20 @@ public class PortalCommandHandler implements CommandExecutor {
         }
     }
 
+    /**
+     * FIX-5: setplayercost now works for offline players (consistent with access commands).
+     * Uses the same resolveOfflinePlayer() helper that warns about unknown players on
+     * online-mode servers.
+     */
     private void handleSetPlayerCostCommand(Player player, String playerName, String portalName, String costStr) {
         if (!player.hasPermission("leverportal.admin")) {
             player.sendMessage("§cYou don't have permission to use this command.");
             return;
         }
 
-        Player targetPlayer = Bukkit.getPlayer(playerName);
-        if (targetPlayer == null) {
-            player.sendMessage("§cPlayer not found (must be online).");
-            return;
-        }
+        // FIX-5: resolve offline player instead of requiring the target to be online
+        OfflinePlayer targetPlayer = resolveOfflinePlayer(player, playerName);
+        if (targetPlayer == null) return;
 
         try {
             int cost = Integer.parseInt(costStr);
@@ -294,8 +410,9 @@ public class PortalCommandHandler implements CommandExecutor {
                 player.sendMessage("§cCost must be zero or positive.");
                 return;
             }
+            String displayName = targetPlayer.getName() != null ? targetPlayer.getName() : playerName;
             economyManager.setPlayerPortalCost(targetPlayer.getUniqueId(), portalName, cost);
-            player.sendMessage("§aSet cost for player '" + playerName + "' on portal '" + portalName + "' to " + cost + " diamonds.");
+            player.sendMessage("§aSet cost for player '" + displayName + "' on portal '" + portalName + "' to " + cost + " diamonds.");
         } catch (NumberFormatException e) {
             player.sendMessage("§cInvalid cost value. Must be a number.");
         }
@@ -338,6 +455,8 @@ public class PortalCommandHandler implements CommandExecutor {
                 try {
                     Portal.AccessMode mode = Portal.AccessMode.valueOf(args[3].toUpperCase());
                     accessManager.setPortalAccessMode(portal, mode);
+                    // FIX-A3: persist access changes immediately (async to avoid blocking main thread)
+                    portalRegistry.saveAllPortalsAsync();
                     player.sendMessage(plugin.getConfig().getString("messages.access_mode_changed", "§aPortal access mode changed to %mode%.")
                             .replace("%mode%", mode.name()));
                 } catch (IllegalArgumentException e) {
@@ -360,6 +479,8 @@ public class PortalCommandHandler implements CommandExecutor {
                 UUID targetId = targetOffline.getUniqueId();
                 String targetName = targetOffline.getName() != null ? targetOffline.getName() : args[3];
                 accessManager.allowPlayer(portal, targetId);
+                // FIX-A3: persist access changes immediately (async to avoid blocking main thread)
+                portalRegistry.saveAllPortalsAsync();
                 player.sendMessage(plugin.getConfig().getString("messages.player_allowed", "§aPlayer %player% can now use this portal.")
                         .replace("%player%", targetName));
                 break;
@@ -379,6 +500,8 @@ public class PortalCommandHandler implements CommandExecutor {
                 UUID targetId = targetOffline.getUniqueId();
                 String targetName = targetOffline.getName() != null ? targetOffline.getName() : args[3];
                 accessManager.denyPlayer(portal, targetId);
+                // FIX-A3: persist access changes immediately (async to avoid blocking main thread)
+                portalRegistry.saveAllPortalsAsync();
                 player.sendMessage(plugin.getConfig().getString("messages.player_denied", "§cPlayer %player% is now denied from using this portal.")
                         .replace("%player%", targetName));
                 break;
@@ -398,6 +521,8 @@ public class PortalCommandHandler implements CommandExecutor {
                 UUID targetId = targetOffline.getUniqueId();
                 String targetName = targetOffline.getName() != null ? targetOffline.getName() : args[3];
                 accessManager.removePlayerAccess(portal, targetId);
+                // FIX-A3: persist access changes immediately (async to avoid blocking main thread)
+                portalRegistry.saveAllPortalsAsync();
                 player.sendMessage(plugin.getConfig().getString("messages.player_access_removed", "§ePlayer %player% access has been reset.")
                         .replace("%player%", targetName));
                 break;
@@ -449,6 +574,8 @@ public class PortalCommandHandler implements CommandExecutor {
                 UUID targetId = targetOffline.getUniqueId();
                 String targetName = targetOffline.getName() != null ? targetOffline.getName() : args[3];
                 accessManager.transferOwnership(portal, targetId);
+                // FIX-A3: persist ownership change immediately (async to avoid blocking main thread)
+                portalRegistry.saveAllPortalsAsync();
                 player.sendMessage("§aOwnership of portal '" + portalName + "' transferred to " + targetName);
                 break;
             }

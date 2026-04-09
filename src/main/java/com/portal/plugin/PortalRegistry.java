@@ -68,6 +68,17 @@ public class PortalRegistry {
     }
 
     /**
+     * FIX-A8: public wrapper for {@link #loadConstants()} — called after {@code /portal reload}
+     * to pick up updated config values without restarting the server.
+     */
+    public void reloadConstants() {
+        loadConstants();
+        // Also reload the player detection radius used by Portal instances
+        double detectionRadius = plugin.getConfig().getDouble("portal.player_detection_radius", 1.5);
+        Portal.setPlayerDetectionRadius(detectionRadius);
+    }
+
+    /**
      * Initialise the storage backend based on config.yml {@code storage.type}.
      * Must be called before loadAllPortals() / saveAllPortals().
      *
@@ -287,14 +298,52 @@ public class PortalRegistry {
         PortalConnection conn = new PortalConnection(source.getId(), target.getId());
         this.connections.add(conn);
 
-        // RT-05 fix: persist immediately (async to avoid blocking the main thread)
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::saveAllPortals);
+        // RT-05 fix: persist immediately (async to avoid blocking the main thread).
+        // FIX-1: snapshot is taken here on the main thread before the async task runs.
+        final List<Portal> portalSnapshot = new ArrayList<>(portals.values());
+        final List<PortalConnection> connSnapshot = new ArrayList<>(connections);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (storage != null) storage.saveAll(portalSnapshot, connSnapshot);
+        });
 
         return true;
     }
 
     /**
+     * FIX-A6: return a human-readable reason why two portals cannot be connected.
+     * Used by {@link com.portal.plugin.PortalCommandHandler} to give meaningful feedback.
+     */
+    public String getConnectionFailureReason(Portal source, Portal target) {
+        if (source.getOrientation() != target.getOrientation()) {
+            return "Portals must have the same orientation (" +
+                    source.getOrientation().name() + " vs " + target.getOrientation().name() + ").";
+        }
+        Location sourceCenter = source.getCenter();
+        Location targetCenter = target.getCenter();
+        if (sourceCenter == null || targetCenter == null) {
+            return "One of the portals has no valid center location.";
+        }
+        org.bukkit.World srcWorld = sourceCenter.getWorld();
+        org.bukkit.World tgtWorld = targetCenter.getWorld();
+        if (srcWorld == null || tgtWorld == null) {
+            return "One of the portals is in an unloaded world.";
+        }
+        if (srcWorld.equals(tgtWorld)) {
+            double distance = sourceCenter.distance(targetCenter);
+            if (distance < minLinkDistance) {
+                return String.format("Portals are too close (%.1f blocks). Minimum distance: %.1f blocks.",
+                        distance, minLinkDistance);
+            }
+        }
+        return "Unknown reason.";
+    }
+
+    /**
      * Check if two portals can be connected (null-safe world check).
+     *
+     * FIX-8: cross-world portal connections are now allowed. The minimum-distance
+     * check is only applied when both portals are in the same world; portals in
+     * different worlds are always considered far enough apart.
      */
     private boolean isValidConnection(Portal source, Portal target) {
         // Must have same orientation
@@ -308,20 +357,27 @@ public class PortalRegistry {
             return false;
         }
 
-        // Null-safe world comparison
         World srcWorld = sourceCenter.getWorld();
         World tgtWorld = targetCenter.getWorld();
-        if (srcWorld == null || tgtWorld == null || !srcWorld.equals(tgtWorld)) {
+        if (srcWorld == null || tgtWorld == null) {
             return false;
         }
 
-        // Distance should be reasonable (not too close)
-        double distance = sourceCenter.distance(targetCenter);
-        return distance >= minLinkDistance;
+        // Cross-world connections are allowed; distance check only within the same world
+        if (srcWorld.equals(tgtWorld)) {
+            double distance = sourceCenter.distance(targetCenter);
+            return distance >= minLinkDistance;
+        }
+
+        // Different worlds — always valid (no distance constraint)
+        return true;
     }
 
     /**
      * Remove a portal.
+     *
+     * FIX-16: save immediately after removal so the portal does not reappear
+     * after a crash before the next scheduled save.
      */
     public void removePortal(String id) {
         Portal portal = this.portals.remove(id);
@@ -329,6 +385,22 @@ public class PortalRegistry {
             unindexPortal(portal);
         }
         this.connections.removeIf(conn -> conn.involves(id));
+        // FIX-A2: take snapshot on the main thread BEFORE handing off to the async task,
+        // so the async thread sees the state at the time of removal — not some future state.
+        final List<Portal> portalSnapshot = new ArrayList<>(portals.values());
+        final List<PortalConnection> connSnapshot = new ArrayList<>(connections);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (storage != null) storage.saveAll(portalSnapshot, connSnapshot);
+        });
+    }
+
+    /**
+     * FIX-3: Clear teleport cooldown state for a player.
+     * Called when a player quits so they are not permanently locked out.
+     */
+    public void clearTeleportState(UUID playerId) {
+        recentlyTeleported.remove(playerId);
+        lastPortalUsed.remove(playerId);
     }
 
     /**
@@ -386,7 +458,16 @@ public class PortalRegistry {
 
         // RT-04 fix: save immediately after creation so the portal survives a crash
         // before the next clean shutdown. Use async save to avoid blocking the main thread.
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::saveAllPortals);
+        // FIX-1: snapshot taken on the main thread before the async task runs.
+        final List<Portal> portalSnapshot = new ArrayList<>(portals.values());
+        final List<PortalConnection> connSnapshot = new ArrayList<>(connections);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            if (storage != null) storage.saveAll(portalSnapshot, connSnapshot);
+        });
+
+        // FIX-A4: portal creation complete — clear the refund entry so quitting later
+        // does not trigger an erroneous refund.
+        economyManager.clearPaidCreation(playerId);
 
         int interiorCount = portal.getInteriorBlockCount();
         player.sendMessage("§aPortal '" + portal.getId() + "' created with " + portal.getBlockCount() + " frame blocks!");
@@ -396,7 +477,8 @@ public class PortalRegistry {
             player.sendMessage("§eWarning: No interior space detected. Make sure your frame encloses an open area.");
         }
         player.sendMessage("§eYou are the owner of this portal. Use §6/portal access §eto manage permissions.");
-        player.sendMessage("§eUse §6/portal link <portal1> <portal2> §eto connect portals.");
+        // FIX-7: explicitly remind the player that the portal needs to be linked before it works
+        player.sendMessage("§e⚠ This portal is not yet connected. Use §6/portal link <portal1> <portal2> §eto connect it — it will not teleport players until linked.");
     }
 
     /**
@@ -520,13 +602,45 @@ public class PortalRegistry {
 
     /**
      * Save all portals and connections via the active storage backend.
+     *
+     * FIX-1: take an immutable snapshot of both collections on the calling thread
+     * (main thread) before handing them off to the storage layer. This prevents
+     * a race condition where the async thread could observe a partially-modified
+     * state if portals or connections are added/removed concurrently.
      */
     public void saveAllPortals() {
         if (storage == null) {
             plugin.getLogger().warning("Storage not initialised — cannot save portals.");
             return;
         }
-        storage.saveAll(new ArrayList<>(portals.values()), new ArrayList<>(connections));
+        // Snapshot taken on the calling thread — safe even when called async
+        List<Portal> portalSnapshot = new ArrayList<>(portals.values());
+        List<PortalConnection> connSnapshot = new ArrayList<>(connections);
+        storage.saveAll(portalSnapshot, connSnapshot);
+    }
+
+    /**
+     * Save all portals and connections asynchronously.
+     *
+     * Takes a snapshot of both collections on the calling (main) thread — safe
+     * from race conditions — then dispatches the actual disk/DB write to an
+     * async worker thread so the main thread is never blocked.
+     *
+     * Use this method from command handlers and other main-thread contexts.
+     * Use {@link #saveAllPortals()} only from contexts that are already async
+     * (e.g., {@code onDisable()} shutdown saves where async dispatch would
+     * race with server teardown).
+     */
+    public void saveAllPortalsAsync() {
+        if (storage == null) {
+            plugin.getLogger().warning("Storage not initialised — cannot save portals.");
+            return;
+        }
+        // Snapshot on calling (main) thread before dispatching to async worker
+        final List<Portal> portalSnapshot = new ArrayList<>(portals.values());
+        final List<PortalConnection> connSnapshot = new ArrayList<>(connections);
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () ->
+            storage.saveAll(portalSnapshot, connSnapshot));
     }
 
     /**
@@ -561,7 +675,8 @@ public class PortalRegistry {
      * Get loaded lever locations for LeverHandler to restore associations.
      */
     public Map<String, Location> getLeverAssociations() {
-        Map<String, Location> result = new HashMap<>();
+        // FIX-A5: use ConcurrentHashMap to match the thread-safe conventions of the rest of the registry.
+        Map<String, Location> result = new ConcurrentHashMap<>();
         for (Map.Entry<String, Portal> entry : portals.entrySet()) {
             Location leverLoc = entry.getValue().getLeverLocation();
             if (leverLoc != null) {

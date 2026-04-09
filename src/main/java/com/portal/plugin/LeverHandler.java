@@ -11,9 +11,9 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * LeverHandler - Manages lever interactions for portal activation.
@@ -24,7 +24,8 @@ public class LeverHandler implements Listener {
     private final PortalRegistry registry;
 
     // H-3 fix: use String key instead of Location to avoid mutable-hash / floating-point issues
-    private final Map<String, String> leverToPortal = new HashMap<>();
+    // FIX-4: use ConcurrentHashMap for thread safety
+    private final Map<String, String> leverToPortal = new ConcurrentHashMap<>();
 
     public LeverHandler(Main plugin, PortalRegistry registry) {
         this.plugin = plugin;

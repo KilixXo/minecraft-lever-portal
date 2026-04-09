@@ -5,9 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
@@ -15,6 +13,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Portal - Represents a single portal with its configuration.
@@ -24,7 +23,19 @@ import java.util.UUID;
  */
 public class Portal {
 
-    public static final double PLAYER_DETECTION_RADIUS = 1.5;
+    /**
+     * FIX-9: player detection radius is now configurable. The default (1.5) is used
+     * until {@link #setPlayerDetectionRadius(double)} is called from {@link Main#onEnable()}.
+     */
+    private static double PLAYER_DETECTION_RADIUS = 1.5;
+
+    public static void setPlayerDetectionRadius(double radius) {
+        PLAYER_DETECTION_RADIUS = radius;
+    }
+
+    public static double getPlayerDetectionRadius() {
+        return PLAYER_DETECTION_RADIUS;
+    }
 
     // MAINT-02: shared Gson instance for JSON serialization
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
@@ -44,8 +55,10 @@ public class Portal {
     // Access control fields
     private UUID ownerId;
     private AccessMode accessMode = AccessMode.PUBLIC;
-    private final Set<UUID> allowedPlayers = new HashSet<>();
-    private final Set<UUID> deniedPlayers = new HashSet<>();
+    // FIX-A1: use ConcurrentHashMap.newKeySet() for thread-safe access from both the
+    // main thread (command handling) and potential async serialisation contexts.
+    private final Set<UUID> allowedPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> deniedPlayers  = ConcurrentHashMap.newKeySet();
 
     public enum Orientation {
         VERTICAL,
@@ -287,7 +300,8 @@ public class Portal {
 
     public void setActive(boolean active) {
         this.active = active;
-        updatePortalBlocks();
+        // FIX-19: removed the empty updatePortalBlocks() call that iterated all
+        // frame blocks on every activation/deactivation without doing anything.
     }
 
     public List<Location> getBlockLocations() {
@@ -447,20 +461,6 @@ public class Portal {
     public boolean isInteriorLocation(Location location) {
         ensureInteriorComputed();
         return interiorLocationKeys.contains(locationKey(location));
-    }
-
-    /**
-     * Update portal blocks visual state based on active status.
-     */
-    private void updatePortalBlocks() {
-        for (Location loc : blockLocations) {
-            Block block = loc.getBlock();
-            if (active) {
-                if (block.getType() != Material.AIR && block.getType() != Material.LEVER) {
-                    // Portal is active — could add particle effects here
-                }
-            }
-        }
     }
 
     /**

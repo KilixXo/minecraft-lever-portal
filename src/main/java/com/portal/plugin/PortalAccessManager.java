@@ -1,10 +1,12 @@
 package com.portal.plugin;
 
-import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.*;
 
 /**
@@ -15,22 +17,27 @@ public class PortalAccessManager {
     private final Main plugin;
     private final Set<EntityType> allowedEntityTypes = new HashSet<>();
     private boolean entityFilteringEnabled = false;
+
+    // SEC-04: runtime entity-filtering overrides live in access-data.yml, not config.yml
+    private final File accessDataFile;
     
     public PortalAccessManager(Main plugin) {
         this.plugin = plugin;
+        this.accessDataFile = new File(plugin.getDataFolder(), "access-data.yml");
         loadConfiguration();
     }
     
     /**
-     * Load configuration from config.yml
+     * Load configuration from config.yml (static defaults) and then apply
+     * runtime overrides from access-data.yml (SEC-04: runtime state is kept
+     * separate from static config so config.yml is never rewritten at runtime).
      */
     public void loadConfiguration() {
         FileConfiguration config = plugin.getConfig();
         
-        // Load entity filtering settings
+        // --- Static defaults from config.yml ---
         entityFilteringEnabled = config.getBoolean("access_control.entity_filtering.enabled", false);
         
-        // Load allowed entity types
         allowedEntityTypes.clear();
         List<String> entityList = config.getStringList("access_control.entity_filtering.allowed_entities");
         for (String entityName : entityList) {
@@ -42,9 +49,52 @@ public class PortalAccessManager {
             }
         }
         
-        // If no entities specified, allow players by default
         if (allowedEntityTypes.isEmpty()) {
             allowedEntityTypes.add(EntityType.PLAYER);
+        }
+
+        // --- Runtime overrides from access-data.yml (takes precedence over config.yml) ---
+        if (accessDataFile.exists()) {
+            YamlConfiguration data = YamlConfiguration.loadConfiguration(accessDataFile);
+            if (data.contains("entity_filtering.enabled")) {
+                entityFilteringEnabled = data.getBoolean("entity_filtering.enabled");
+            }
+            List<String> runtimeEntities = data.getStringList("entity_filtering.allowed_entities");
+            if (!runtimeEntities.isEmpty()) {
+                allowedEntityTypes.clear();
+                for (String entityName : runtimeEntities) {
+                    try {
+                        allowedEntityTypes.add(EntityType.valueOf(entityName.toUpperCase()));
+                    } catch (IllegalArgumentException e) {
+                        plugin.getLogger().warning("[AccessManager] Invalid entity type in access-data.yml: " + entityName);
+                    }
+                }
+                if (allowedEntityTypes.isEmpty()) {
+                    allowedEntityTypes.add(EntityType.PLAYER);
+                }
+            }
+        }
+    }
+
+    /**
+     * Persist runtime entity-filtering state to access-data.yml.
+     *
+     * Called whenever {@link #setEntityFilteringEnabled}, {@link #addAllowedEntityType},
+     * or {@link #removeAllowedEntityType} mutates in-memory state, so changes
+     * survive a server restart without touching config.yml.
+     */
+    private void saveEntityData() {
+        YamlConfiguration data = new YamlConfiguration();
+        data.set("entity_filtering.enabled", entityFilteringEnabled);
+        List<String> names = new ArrayList<>();
+        for (EntityType type : allowedEntityTypes) {
+            names.add(type.name());
+        }
+        data.set("entity_filtering.allowed_entities", names);
+        try {
+            data.save(accessDataFile);
+        } catch (IOException e) {
+            plugin.getLogger().severe("[AccessManager] Failed to save access-data.yml: " + e.getMessage());
         }
     }
     
@@ -166,38 +216,32 @@ public class PortalAccessManager {
     
     /**
      * Set entity filtering enabled/disabled.
+     *
+     * FIX-10 (revised): runtime state is persisted to access-data.yml so that
+     * admin changes survive a server restart without rewriting config.yml.
      */
     public void setEntityFilteringEnabled(boolean enabled) {
         this.entityFilteringEnabled = enabled;
-        plugin.getConfig().set("access_control.entity_filtering.enabled", enabled);
-        plugin.saveConfig();
+        saveEntityData();
     }
     
     /**
      * Add an allowed entity type.
+     *
+     * FIX-10 (revised): persisted to access-data.yml — see {@link #setEntityFilteringEnabled}.
      */
     public void addAllowedEntityType(EntityType type) {
         allowedEntityTypes.add(type);
-        saveEntityTypes();
+        saveEntityData();
     }
     
     /**
      * Remove an allowed entity type.
+     *
+     * FIX-10 (revised): persisted to access-data.yml — see {@link #setEntityFilteringEnabled}.
      */
     public void removeAllowedEntityType(EntityType type) {
         allowedEntityTypes.remove(type);
-        saveEntityTypes();
-    }
-    
-    /**
-     * Save entity types to config.
-     */
-    private void saveEntityTypes() {
-        List<String> entityNames = new ArrayList<>();
-        for (EntityType type : allowedEntityTypes) {
-            entityNames.add(type.name());
-        }
-        plugin.getConfig().set("access_control.entity_filtering.allowed_entities", entityNames);
-        plugin.saveConfig();
+        saveEntityData();
     }
 }

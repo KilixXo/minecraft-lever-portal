@@ -52,9 +52,12 @@ public class PortalConnection {
 
     @Override
     public int hashCode() {
-        // MAINT-04 fix: XOR is the standard commutative hash for bidirectional pairs.
-        // Avoids integer overflow risk of the previous (min*31 + max) formula.
-        return portal1Id.hashCode() ^ portal2Id.hashCode();
+        // FIX-20: use sum of individual hashes instead of XOR to reduce collisions.
+        // XOR of two equal strings is always 0; XOR of symmetric pairs (a,b) and (b,a)
+        // is identical by design (bidirectional), but XOR also produces identical results
+        // for many unrelated pairs. Summing the hashes preserves commutativity while
+        // distributing values more evenly across the hash space.
+        return portal1Id.hashCode() + portal2Id.hashCode();
     }
 
     @Override

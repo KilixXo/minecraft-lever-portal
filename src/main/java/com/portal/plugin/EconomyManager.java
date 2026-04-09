@@ -10,9 +10,9 @@ import org.bukkit.inventory.PlayerInventory;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * EconomyManager - Manages diamond-based economy for portal usage and creation.
@@ -32,13 +32,18 @@ public class EconomyManager {
     private int maxCost;
 
     // Portal-specific costs (runtime data — stored in data.yml)
-    private final Map<String, Integer> portalCosts = new HashMap<>();
+    // FIX-17: use ConcurrentHashMap for thread safety (saveData() may be called from async context)
+    private final Map<String, Integer> portalCosts = new ConcurrentHashMap<>();
 
     // Player-specific costs per portal (runtime data — stored in data.yml)
-    private final Map<UUID, Map<String, Integer>> playerCosts = new HashMap<>();
+    private final Map<UUID, Map<String, Integer>> playerCosts = new ConcurrentHashMap<>();
 
     // Pending portal creations awaiting confirmation
-    private final Map<UUID, PendingCreation> pendingCreations = new HashMap<>();
+    private final Map<UUID, PendingCreation> pendingCreations = new ConcurrentHashMap<>();
+
+    // FIX-A4: track the cost paid for an in-progress creation session so we can
+    // refund diamonds if the player disconnects before /portal finish.
+    private final Map<UUID, Integer> paidCreationCosts = new ConcurrentHashMap<>();
 
     // SEC-04: separate file for runtime cost data
     private File dataFile;
@@ -93,7 +98,7 @@ public class EconomyManager {
             for (String uuidStr : playerSection.getKeys(false)) {
                 try {
                     UUID uuid = UUID.fromString(uuidStr);
-                    Map<String, Integer> costs = new HashMap<>();
+                    Map<String, Integer> costs = new ConcurrentHashMap<>();
                     ConfigurationSection playerPortals = playerSection.getConfigurationSection(uuidStr);
                     if (playerPortals != null) {
                         for (String portalName : playerPortals.getKeys(false)) {
@@ -193,7 +198,7 @@ public class EconomyManager {
      * BUG-07 fix: same semantics — 0 = explicitly free, negative = remove override.
      */
     public void setPlayerPortalCost(UUID playerId, String portalName, int cost) {
-        Map<String, Integer> costs = playerCosts.computeIfAbsent(playerId, k -> new HashMap<>());
+        Map<String, Integer> costs = playerCosts.computeIfAbsent(playerId, k -> new ConcurrentHashMap<>());
         if (cost < 0) {
             costs.remove(portalName);
             if (costs.isEmpty()) {
@@ -260,23 +265,18 @@ public class EconomyManager {
 
     /**
      * Charge player for teleportation.
-     * PERF-05 fix: uses tryRemoveDiamonds() for a single-pass check-and-remove.
+     *
+     * FIX-6: removed the redundant countDiamonds() pre-check. tryRemoveDiamonds()
+     * already performs a single-pass check-and-remove internally, so the previous
+     * code was doing 3 inventory passes (count + check + remove) instead of 2
+     * (check + remove). We now call tryRemoveDiamonds() directly and only call
+     * countDiamonds() when we need to show the current balance in the error message.
      */
     public boolean chargeTeleport(Player player, String portalName) {
         if (!economyEnabled) return true;
 
         int cost = getTeleportCost(player, portalName);
         if (cost <= 0) return true;
-
-        int balance = countDiamonds(player);
-        if (balance < cost) {
-            String msg = plugin.getConfig().getString("messages.insufficient_funds",
-                "§cYou don't have enough diamonds! Required: %cost%, You have: %balance%");
-            msg = msg.replace("%cost%", String.valueOf(cost))
-                     .replace("%balance%", String.valueOf(balance));
-            player.sendMessage(msg);
-            return false;
-        }
 
         if (tryRemoveDiamonds(player, cost)) {
             String msg = plugin.getConfig().getString("messages.payment_success",
@@ -286,6 +286,13 @@ public class EconomyManager {
             return true;
         }
 
+        // Not enough diamonds — show informative message with current balance
+        int balance = countDiamonds(player);
+        String msg = plugin.getConfig().getString("messages.insufficient_funds",
+            "§cYou don't have enough diamonds! Required: %cost%, You have: %balance%");
+        msg = msg.replace("%cost%", String.valueOf(cost))
+                 .replace("%balance%", String.valueOf(balance));
+        player.sendMessage(msg);
         return false;
     }
 
@@ -337,6 +344,12 @@ public class EconomyManager {
             plugin.getPortalRegistry().startPortalCreation(player, pending.portalName, pending.orientation);
             pendingCreations.remove(player.getUniqueId());
 
+            // FIX-A4: record the paid cost so it can be refunded if the player quits
+            // before completing /portal finish.
+            if (cost > 0) {
+                paidCreationCosts.put(player.getUniqueId(), cost);
+            }
+
             String msg = plugin.getConfig().getString("messages.creation_success",
                 "§aPortal created! Paid %cost% diamonds.");
             msg = msg.replace("%cost%", String.valueOf(cost));
@@ -345,6 +358,37 @@ public class EconomyManager {
         }
 
         return false;
+    }
+
+    /**
+     * FIX-A4: called when the portal creation is successfully finished.
+     * Clears the paid-cost entry so we don't refund on the next quit.
+     */
+    public void clearPaidCreation(UUID playerId) {
+        paidCreationCosts.remove(playerId);
+    }
+
+    /**
+     * FIX-A4: refund diamonds to a player if they have a paid-but-unfinished creation
+     * session (e.g., they disconnected before /portal finish). The player must be online
+     * for the refund to succeed; otherwise the cost is silently cleared.
+     */
+    public void refundIfPaid(Player player) {
+        Integer paidCost = paidCreationCosts.remove(player.getUniqueId());
+        if (paidCost != null && paidCost > 0 && player.isOnline()) {
+            // Give diamonds back by adding them to the inventory
+            org.bukkit.inventory.ItemStack refund =
+                new org.bukkit.inventory.ItemStack(org.bukkit.Material.DIAMOND, paidCost);
+            java.util.Map<Integer, org.bukkit.inventory.ItemStack> leftover =
+                player.getInventory().addItem(refund);
+            if (!leftover.isEmpty()) {
+                // Inventory full — drop at player's feet
+                for (org.bukkit.inventory.ItemStack drop : leftover.values()) {
+                    player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                }
+            }
+            player.sendMessage("§ePortal creation cancelled. " + paidCost + " diamond(s) refunded.");
+        }
     }
 
     /**

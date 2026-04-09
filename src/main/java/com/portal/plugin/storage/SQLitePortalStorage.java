@@ -110,9 +110,35 @@ public class SQLitePortalStorage implements PortalStorage {
         }
     }
 
+    /**
+     * FIX-11: validate the connection before use and attempt to reconnect if it
+     * has been closed (e.g., due to a file-system error). Unlike MySQL, SQLite
+     * connections rarely drop, but this guard prevents silent failures.
+     */
+    private boolean ensureConnection() {
+        try {
+            if (connection != null && !connection.isClosed()) {
+                return true;
+            }
+            plugin.getLogger().warning("[Storage] SQLite connection was closed — attempting to reconnect.");
+            Class.forName("org.sqlite.JDBC");
+            connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+            connection.setAutoCommit(false);
+            try (java.sql.Statement pragma = connection.createStatement()) {
+                pragma.execute("PRAGMA foreign_keys = ON");
+            }
+            createTables();
+            plugin.getLogger().info("[Storage] SQLite reconnected successfully.");
+            return true;
+        } catch (ClassNotFoundException | SQLException e) {
+            plugin.getLogger().severe("[Storage] Failed to reconnect to SQLite: " + e.getMessage());
+            return false;
+        }
+    }
+
     @Override
     public void saveAll(List<Portal> portals, List<PortalConnection> connections) {
-        if (connection == null) return;
+        if (!ensureConnection()) return;
         try {
             // Clear existing data
             try (Statement stmt = connection.createStatement()) {
@@ -211,7 +237,7 @@ public class SQLitePortalStorage implements PortalStorage {
     @Override
     public List<Portal> loadPortals() {
         List<Portal> result = new ArrayList<>();
-        if (connection == null) return result;
+        if (!ensureConnection()) return result;
 
         try {
             // Load portals
@@ -319,7 +345,7 @@ public class SQLitePortalStorage implements PortalStorage {
     @Override
     public List<PortalConnection> loadConnections() {
         List<PortalConnection> result = new ArrayList<>();
-        if (connection == null) return result;
+        if (!ensureConnection()) return result;
 
         try (Statement stmt = connection.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT portal1_id, portal2_id FROM portal_connections")) {

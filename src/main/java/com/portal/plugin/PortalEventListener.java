@@ -6,6 +6,8 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
+import java.util.UUID;
+
 /**
  * PortalEventListener — handles Bukkit events related to portal usage.
  *
@@ -35,8 +37,14 @@ public class PortalEventListener implements Listener {
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        // Clean up pending creations and sessions
-        economyManager.cancelPendingCreation(event.getPlayer().getUniqueId());
+        UUID playerId = event.getPlayer().getUniqueId();
+        // FIX-A4: refund diamonds if the player paid for a portal but quit before /portal finish
+        economyManager.refundIfPaid(event.getPlayer());
+        // Clean up pending pre-payment creations and sessions
+        economyManager.cancelPendingCreation(playerId);
         portalRegistry.cancelPortalCreation(event.getPlayer());
+        // FIX-3: also clear teleport cooldown state so the player is not
+        // permanently locked out if they quit while a cooldown was active.
+        portalRegistry.clearTeleportState(playerId);
     }
 }
