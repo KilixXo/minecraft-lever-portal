@@ -68,6 +68,26 @@ shadowJar {
     exclude 'META-INF/LICENSE*'
     exclude 'META-INF/NOTICE*'
 
+    // ── Size optimisation: strip unused native SQLite libraries ───────────────
+    // sqlite-jdbc bundles platform-specific native binaries (~10 MB total).
+    // We keep the architectures relevant to Minecraft servers:
+    //   Linux x86_64, aarch64, arm  (most production/cloud-ARM hosts)
+    //   Windows x86, x86_64, arm64  (standard Windows targets)
+    //   Mac x86_64, aarch64         (developer / CI machines)
+    // Removed: Android (no Minecraft server), FreeBSD, Linux ppc64/armv6/armv7.
+    exclude 'org/sqlite/native/FreeBSD/**'
+    exclude 'org/sqlite/native/Linux/android-arm/**'
+    exclude 'org/sqlite/native/Linux/android-arm64/**'
+    exclude 'org/sqlite/native/Linux/android-x86/**'
+    exclude 'org/sqlite/native/Linux/android-x86_64/**'
+    exclude 'org/sqlite/native/Linux/ppc64/**'
+    exclude 'org/sqlite/native/Linux/armv6/**'
+    exclude 'org/sqlite/native/Linux/armv7/**'
+
+    // Strip Maven build metadata bundled inside dependency JARs (pom.xml /
+    // pom.properties for each dep) — not used at runtime, saves ~100 KB.
+    exclude 'META-INF/maven/**'
+
     // Merge META-INF/services/* files from all jars instead of overwriting.
     // This is critical for JDBC driver auto-discovery via ServiceLoader:
     // without it, only one of the four drivers (SQLite/MySQL/MariaDB/PG)

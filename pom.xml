@@ -70,6 +70,26 @@
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
+                                        <!-- Strip Maven build metadata bundled inside deps (not needed at runtime) -->
+                                        <exclude>META-INF/maven/**</exclude>
+                                    </excludes>
+                                </filter>
+                                <!--
+                                  Size optimisation: strip unused native SQLite libraries from sqlite-jdbc.
+                                  Kept:  Linux x86_64/aarch64/arm, Windows x86/x86_64/arm64, Mac x86_64/aarch64.
+                                  Removed: Android, FreeBSD, Linux ppc64/armv6/armv7 (no Minecraft server use).
+                                -->
+                                <filter>
+                                    <artifact>org.xerial:sqlite-jdbc</artifact>
+                                    <excludes>
+                                        <exclude>org/sqlite/native/FreeBSD/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/android-arm/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/android-arm64/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/android-x86/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/android-x86_64/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/ppc64/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/armv6/**</exclude>
+                                        <exclude>org/sqlite/native/Linux/armv7/**</exclude>
                                     </excludes>
                                 </filter>
                             </filters>
